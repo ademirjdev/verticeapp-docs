@@ -1,0 +1,674 @@
+openapi: 3.0.3
+
+info:
+  title: VérticeApp API
+  version: "0.2.0"
+  description: |
+    API REST do VérticeApp. A especificação documenta as rotas fornecidas,
+    suas permissões e as validações identificadas. Quando um contrato foi
+    inferido do Flutter ou de um serviço, ele é identificado como tal.
+    As respostas marcadas como pendentes não definem um formato garantido.
+    A URL do ambiente de produção ainda não foi informada.
+
+servers:
+  - url: /api/v1
+    description: Prefixo relativo da API. Hospede a documentação na mesma origem ou configure o servidor do ambiente antes de executar requisições.
+
+tags:
+  - name: Autenticação
+  - name: Clientes
+  - name: Usuários
+  - name: Eventos
+  - name: Chat
+  - name: Documentos
+
+security:
+  - BearerAuth: []
+
+paths:
+  /autenticacao/login:
+    post:
+      tags: [Autenticação]
+      operationId: login
+      summary: Entrar e obter o token de acesso
+      description: Limite configurado de 10 requisições por janela de 15 minutos.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, senha]
+              properties:
+                email: { type: string, format: email }
+                senha: { type: string, format: password, writeOnly: true }
+      responses:
+        "200": { $ref: "#/components/responses/Sessao" }
+        "401":
+          description: Credenciais inválidas.
+        "403":
+          description: Conta inativa ou vínculo de acesso não resolvido.
+        "429": { $ref: "#/components/responses/Limite" }
+        default: { $ref: "#/components/responses/ErroPendente" }
+
+  /autenticacao/trocar-senha:
+    post:
+      tags: [Autenticação]
+      operationId: trocarSenha
+      summary: Trocar a senha do usuário autenticado
+      description: |
+        Aceita a sessão mesmo quando a troca é obrigatória. Use senhaAtual e
+        novaSenha. A validação também aceita senha_atual e nova_senha como
+        aliases dos campos correspondentes; não envie as duas versões juntas.
+        A resposta de sucesso contém a nova sessão.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TrocarSenhaRequest"
+      responses:
+        "200": { $ref: "#/components/responses/Sessao" }
+        "400":
+          description: Senha atual incorreta ou nova senha igual à anterior; a entrada também está sujeita à validação de rota.
+        "401": { $ref: "#/components/responses/NaoAutenticado" }
+        "404":
+          description: Usuário ativo não encontrado durante a troca.
+        "409":
+          description: A conta mudou durante a operação; é necessário entrar novamente.
+        default: { $ref: "#/components/responses/ErroPendente" }
+
+  /autenticacao/esqueci-senha:
+    post:
+      tags: [Autenticação]
+      operationId: solicitarRecuperacaoSenha
+      summary: Solicitar a recuperação de senha
+      description: Limite configurado de 5 requisições por janela de 60 minutos no limitador compartilhado pelas rotas de recuperação. O meio de entrega do código não foi confirmado.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email: { type: string, format: email }
+      responses:
+        "2XX": { $ref: "#/components/responses/SucessoPendente" }
+        "429": { $ref: "#/components/responses/Limite" }
+        default: { $ref: "#/components/responses/ErroPendente" }
+
+  /autenticacao/redefinir-senha:
+    post:
+      tags: [Autenticação]
+      operationId: redefinirSenha
+      summary: Redefinir a senha com código de recuperação
+      description: Aceita nova_senha como alias de novaSenha. Compartilha o limitador de recuperação com a solicitação de código.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, codigo, novaSenha]
+              properties:
+                email: { type: string, format: email }
+                codigo:
+                  type: string
+                  pattern: '^[0-9]{6}$'
+                  writeOnly: true
+                  description: Código de seis dígitos; envie como texto para preservar zeros iniciais.
+                novaSenha: { $ref: "#/components/schemas/NovaSenha" }
+      responses:
+        "2XX": { $ref: "#/components/responses/SucessoPendente" }
+        "429": { $ref: "#/components/responses/Limite" }
+        default: { $ref: "#/components/responses/ErroPendente" }
+
+  /clientes:
+    get:
+      tags: [Clientes]
+      operationId: listarClientes
+      summary: Listar clientes do escritório
+      description: Acesso para administrador, contador e assistente. Os filtros públicos não estão especificados no arquivo de rotas.
+      responses:
+        "200":
+          description: Lista de clientes em data. Os campos de cada item dependem do serializador da API.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, enum: [true] }
+                  data:
+                    type: array
+                    items: { type: object, additionalProperties: true }
+        "401": { $ref: "#/components/responses/NaoAutenticado" }
+        "403": { $ref: "#/components/responses/AcessoNegado" }
+    post:
+      tags: [Clientes]
+      operationId: criarCliente
+      summary: Cadastrar um cliente
+      description: Somente administrador. O formato de qualquer dado de provisionamento da conta precisa ser confirmado na versão publicada.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/DadosCliente"
+                - required: [tipo, razaoSocial, documento, email, setores]
+      responses:
+        "201":
+          description: Cliente cadastrado. A estrutura completa da resposta precisa ser confirmada.
+        "401": { $ref: "#/components/responses/NaoAutenticado" }
+        "403": { $ref: "#/components/responses/AcessoNegado" }
+        default: { $ref: "#/components/responses/ErroPendente" }
+
+  /clientes/{id}:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    put:
+      tags: [Clientes]
+      operationId: atualizarCliente
+      summary: Atualizar dados de um cliente
+      description: Administrador ou contador. Envie pelo menos um campo.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/DadosCliente"
+                - type: object
+                  minProperties: 1
+                  properties:
+                    status: { type: string, enum: [ativo, bloqueado] }
+      responses:
+        "200":
+          description: Cliente atualizado.
+        "401": { $ref: "#/components/responses/NaoAutenticado" }
+        "403": { $ref: "#/components/responses/AcessoNegado" }
+        default: { $ref: "#/components/responses/ErroPendente" }
+
+  /clientes/{id}/ativar:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    post:
+      tags: [Clientes]
+      operationId: ativarCliente
+      summary: Ativar um cliente
+      description: Administrador ou contador.
+      responses:
+        "200":
+          description: Cliente ativado.
+        "401": { $ref: "#/components/responses/NaoAutenticado" }
+        "403": { $ref: "#/components/responses/AcessoNegado" }
+        default: { $ref: "#/components/responses/ErroPendente" }
+
+  /usuarios:
+    get:
+      tags: [Usuários]
+      operationId: listarUsuarios
+      summary: Listar usuários
+      description: Administrador, contador ou assistente. Filtros e paginação não confirmados.
+      responses:
+        "2XX": { $ref: "#/components/responses/SucessoPendente" }
+        "401": { $ref: "#/components/responses/NaoAutenticado" }
+        "403": { $ref: "#/components/responses/AcessoNegado" }
+    post:
+      tags: [Usuários]
+      operationId: criarUsuario
+      summary: Criar um usuário
+      description: Somente administrador. A validação descarta id e escritorioId enviados no corpo.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/DadosUsuario"
+                - type: object
+                  required: [email, senha, nomeCompleto, perfil]
+                  properties:
+                    senha: { type: string, format: password, minLength: 6, writeOnly: true }
+      responses:
+        "2XX": { $ref: "#/components/responses/SucessoPendente" }
+        "401": { $ref: "#/components/responses/NaoAutenticado" }
+        "403": { $ref: "#/components/responses/AcessoNegado" }
+        default: { $ref: "#/components/responses/ErroPendente" }
+
+  /usuarios/{id}:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    get:
+      tags: [Usuários]
+      operationId: buscarUsuario
+      summary: Consultar um usuário por ID
+      description: Administrador, contador ou assistente.
+      responses:
+        "2XX": { $ref: "#/components/responses/SucessoPendente" }
+        "401": { $ref: "#/components/responses/NaoAutenticado" }
+        "403": { $ref: "#/components/responses/AcessoNegado" }
+        default: { $ref: "#/components/responses/ErroPendente" }
+    put:
+      tags: [Usuários]
+      operationId: atualizarUsuario
+      summary: Atualizar um usuário
+      description: Somente administrador. Envie pelo menos um campo editável. A validação também aceita senha vazia; prefira omitir o campo se não for alterar a senha.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/DadosUsuario"
+                - type: object
+                  minProperties: 1
+                  properties:
+                    senha:
+                      type: string
+                      format: password
+                      writeOnly: true
+                      anyOf:
+                        - { maxLength: 0 }
+                        - { minLength: 6 }
+      responses:
+        "2XX": { $ref: "#/components/responses/SucessoPendente" }
+        "401": { $ref: "#/components/responses/NaoAutenticado" }
+        "403": { $ref: "#/components/responses/AcessoNegado" }
+        default: { $ref: "#/components/responses/ErroPendente" }
+    delete:
+      tags: [Usuários]
+      operationId: removerUsuario
+      summary: Remover um usuário
+      description: Somente administrador. Não foi confirmado se a remoção é lógica ou física.
+      responses:
+        "2XX": { $ref: "#/components/responses/SucessoPendente" }
+        "401": { $ref: "#/components/responses/NaoAutenticado" }
+        "403": { $ref: "#/components/responses/AcessoNegado" }
+        default: { $ref: "#/components/responses/ErroPendente" }
+
+  /eventos:
+    get:
+      tags: [Eventos]
+      operationId: listarEventos
+      summary: Listar eventos acessíveis
+      parameters:
+        - $ref: "#/components/parameters/ClienteQuery"
+        - $ref: "#/components/parameters/SetorQuery"
+      responses:
+        "200": { $ref: "#/components/responses/ListaItems" }
+        "401": { $ref: "#/components/responses/NaoAutenticado" }
+        "403": { $ref: "#/components/responses/AcessoNegado" }
+        default: { $ref: "#/components/responses/ErroPendente" }
+    post:
+      tags: [Eventos]
+      operationId: criarEvento
+      summary: Criar um evento
+      description: Corpo identificado no Flutter. A API deve ser consultada para confirmar campos obrigatórios, status aceitos e validações específicas de cada setor.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                clienteId:
+                  type: string
+                  description: Informado pela equipe; o Flutter omite no perfil cliente.
+                setor: { type: string, example: FINANCEIRO }
+                titulo: { type: string }
+                descricao: { type: string }
+                status: { type: string }
+                campos: { type: object, additionalProperties: true }
+      responses:
+        "2XX": { $ref: "#/components/responses/SucessoPendente" }
+        "401": { $ref: "#/components/responses/NaoAutenticado" }
+        "403": { $ref: "#/components/responses/AcessoNegado" }
+        default: { $ref: "#/components/responses/ErroPendente" }
+
+  /eventos/{id}/status:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    put:
+      tags: [Eventos]
+      operationId: alterarStatusEvento
+      summary: Alterar o status de um evento
+      description: O formato exato do corpo e as transições permitidas precisam ser confirmados no EventoService do Flutter e no controller da API.
+      responses:
+        "2XX": { $ref: "#/components/responses/SucessoPendente" }
+        "401": { $ref: "#/components/responses/NaoAutenticado" }
+        "403": { $ref: "#/components/responses/AcessoNegado" }
+        default: { $ref: "#/components/responses/ErroPendente" }
+
+  /eventos/{id}/anexos:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    post:
+      tags: [Eventos]
+      operationId: anexarArquivoEvento
+      summary: Enviar um anexo para um evento
+      description: Envie um arquivo no campo arquivo. Tipos permitidos e limite de tamanho no servidor dependem do middleware de upload.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [arquivo]
+              properties:
+                arquivo: { type: string, format: binary }
+      responses:
+        "2XX": { $ref: "#/components/responses/SucessoPendente" }
+        "401": { $ref: "#/components/responses/NaoAutenticado" }
+        "403": { $ref: "#/components/responses/AcessoNegado" }
+        default: { $ref: "#/components/responses/ErroPendente" }
+
+  /eventos/{id}/anexos/{anexoId}:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+      - name: anexoId
+        in: path
+        required: true
+        schema: { type: string }
+        description: Identificador do anexo pertencente ao evento.
+    get:
+      tags: [Eventos]
+      operationId: baixarAnexoEvento
+      summary: Baixar um anexo de evento
+      responses:
+        "200": { $ref: "#/components/responses/Arquivo" }
+        "401": { $ref: "#/components/responses/NaoAutenticado" }
+        "403": { $ref: "#/components/responses/AcessoNegado" }
+        default: { $ref: "#/components/responses/ErroPendente" }
+
+  /chat:
+    get:
+      tags: [Chat]
+      operationId: listarMensagens
+      summary: Listar mensagens de uma conversa
+      description: A conversa é identificada por cliente e setor. Pelo serviço analisado, a equipe deve informar o cliente; para o perfil cliente, o vínculo vem da sessão.
+      parameters:
+        - $ref: "#/components/parameters/ClienteQuery"
+        - name: setor
+          in: query
+          required: true
+          schema: { type: string, example: FINANCEIRO }
+      responses:
+        "2XX": { $ref: "#/components/responses/SucessoPendente" }
+        "401": { $ref: "#/components/responses/NaoAutenticado" }
+        "403": { $ref: "#/components/responses/AcessoNegado" }
+        default: { $ref: "#/components/responses/ErroPendente" }
+    post:
+      tags: [Chat]
+      operationId: enviarMensagem
+      summary: Enviar uma mensagem de texto
+      description: Campos identificados no serviço de chat. A rota anexada não declara middleware multipart, portanto o envio de arquivo não está documentado nesta operação.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [setor, texto]
+              properties:
+                clienteId:
+                  type: string
+                  description: Identificador do cliente para a equipe. O serviço também lê cliente_id.
+                setor: { type: string, example: FINANCEIRO }
+                texto: { type: string, minLength: 1, maxLength: 1000 }
+      responses:
+        "2XX": { $ref: "#/components/responses/SucessoPendente" }
+        "401": { $ref: "#/components/responses/NaoAutenticado" }
+        "403": { $ref: "#/components/responses/AcessoNegado" }
+        default: { $ref: "#/components/responses/ErroPendente" }
+
+  /conversas:
+    get:
+      tags: [Chat]
+      operationId: listarConversas
+      summary: Listar conversas acessíveis
+      parameters:
+        - $ref: "#/components/parameters/SetorQuery"
+      responses:
+        "2XX": { $ref: "#/components/responses/SucessoPendente" }
+        "401": { $ref: "#/components/responses/NaoAutenticado" }
+        "403": { $ref: "#/components/responses/AcessoNegado" }
+        default: { $ref: "#/components/responses/ErroPendente" }
+
+  /documentos:
+    get:
+      tags: [Documentos]
+      operationId: listarDocumentos
+      summary: Listar documentos e anexos acessíveis
+      description: No serviço analisado, a equipe deve informar clienteId; para o perfil cliente, o vínculo vem da sessão.
+      parameters:
+        - $ref: "#/components/parameters/ClienteQuery"
+        - $ref: "#/components/parameters/SetorQuery"
+      responses:
+        "200": { $ref: "#/components/responses/ListaItems" }
+        "401": { $ref: "#/components/responses/NaoAutenticado" }
+        "403": { $ref: "#/components/responses/AcessoNegado" }
+        default: { $ref: "#/components/responses/ErroPendente" }
+    post:
+      tags: [Documentos]
+      operationId: enviarDocumento
+      summary: Enviar um documento
+      description: O campo de arquivo é confirmado na rota; os metadados abaixo vêm do serviço analisado. Para a equipe, clienteId é necessário; no perfil cliente, o vínculo vem da sessão. Tipos e tamanho máximo dependem do middleware de upload.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [arquivo, setor]
+              properties:
+                arquivo: { type: string, format: binary }
+                clienteId: { type: string }
+                setor: { type: string, example: FINANCEIRO }
+                categoria: { type: string, maxLength: 100 }
+                descricao: { type: string, maxLength: 1000 }
+                competencia: { type: string, maxLength: 20 }
+                vencimento:
+                  type: string
+                  example: "2026-12-15"
+                  description: Data opcional interpretada pelo servidor; prefira formato ISO.
+      responses:
+        "201":
+          description: Documento registrado.
+        "401": { $ref: "#/components/responses/NaoAutenticado" }
+        "403": { $ref: "#/components/responses/AcessoNegado" }
+        default: { $ref: "#/components/responses/ErroPendente" }
+
+  /documentos/{id}/download:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    get:
+      tags: [Documentos]
+      operationId: baixarDocumento
+      summary: Baixar um documento
+      responses:
+        "200": { $ref: "#/components/responses/Arquivo" }
+        "401": { $ref: "#/components/responses/NaoAutenticado" }
+        "403": { $ref: "#/components/responses/AcessoNegado" }
+        "404":
+          description: Documento ou arquivo não encontrado no escopo permitido.
+        default: { $ref: "#/components/responses/ErroPendente" }
+
+  /documentos/{id}:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    delete:
+      tags: [Documentos]
+      operationId: excluirDocumento
+      summary: Excluir um documento
+      description: Restrito à equipe dentro do escopo autorizado. Documentos vinculados a mensagens não podem ser excluídos por esta operação.
+      responses:
+        "200":
+          description: Documento excluído; a resposta contém success verdadeiro e data nulo.
+        "401": { $ref: "#/components/responses/NaoAutenticado" }
+        "403": { $ref: "#/components/responses/AcessoNegado" }
+        "404":
+          description: Documento não encontrado no escopo permitido.
+        "409":
+          description: O documento está vinculado a uma mensagem.
+        default: { $ref: "#/components/responses/ErroPendente" }
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Use o token retornado no login ou na troca de senha. No botão Authorize do Swagger UI, informe somente o token, sem o prefixo Bearer.
+  parameters:
+    Id:
+      name: id
+      in: path
+      required: true
+      description: Identificador do recurso.
+      schema: { type: string }
+    ClienteQuery:
+      name: clienteId
+      in: query
+      description: Identificador do cliente. O serviço também lê cliente_id; a necessidade do parâmetro depende da operação e do perfil.
+      schema: { type: string }
+    SetorQuery:
+      name: setor
+      in: query
+      description: Código de setor definido pelo backend.
+      schema: { type: string, example: FINANCEIRO }
+  responses:
+    Sessao:
+      description: Sessão autenticada. Se precisaTrocarSenha for verdadeiro, conclua a troca antes de usar as demais rotas protegidas.
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [success, data]
+            properties:
+              success: { type: boolean, enum: [true] }
+              data:
+                type: object
+                required: [token, usuario]
+                properties:
+                  token: { type: string, description: JWT de acesso. }
+                  usuario:
+                    $ref: "#/components/schemas/UsuarioSessao"
+    NaoAutenticado:
+      description: Token ausente, inválido ou sessão expirada.
+    AcessoNegado:
+      description: Operação não permitida para o perfil ou vínculo do usuário, ou sessão com troca de senha obrigatória.
+    Limite:
+      description: Limite de requisições atingido.
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              success: { type: boolean, enum: [false] }
+              error:
+                type: object
+                properties:
+                  code: { type: string, enum: [MUITAS_TENTATIVAS] }
+                  message: { type: string }
+                  details:
+                    type: array
+                    items: { type: string }
+    SucessoPendente:
+      description: Operação bem-sucedida. O código HTTP específico e o esquema de resposta precisam ser confirmados no controller.
+    ErroPendente:
+      description: Outros códigos e formatos de erro ainda precisam ser confirmados no controller ou nos middlewares.
+    ListaItems:
+      description: Lista de registros acessíveis. Os campos de cada item não estão detalhados nesta versão.
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              success: { type: boolean, enum: [true] }
+              data:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { type: object, additionalProperties: true }
+    Arquivo:
+      description: Conteúdo binário do arquivo. O tipo de mídia efetivo pode variar conforme o arquivo e o controller.
+      content:
+        "*/*":
+          schema: { type: string, format: binary }
+  schemas:
+    TrocarSenhaRequest:
+      type: object
+      required: [senhaAtual, novaSenha]
+      properties:
+        senhaAtual: { type: string, format: password, writeOnly: true }
+        novaSenha: { $ref: "#/components/schemas/NovaSenha" }
+    NovaSenha:
+      type: string
+      format: password
+      minLength: 6
+      writeOnly: true
+      pattern: '^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9\s]).+$'
+      description: No servidor, o mínimo é de 6 unidades de texto e o máximo é de 72 bytes em UTF-8.
+    Perfil:
+      type: string
+      enum: [administrador, contador, assistente, cliente]
+    DadosCliente:
+      type: object
+      properties:
+        tipo: { type: string, enum: [PF, PJ] }
+        razaoSocial: { type: string }
+        nomeFantasia: { type: string, nullable: true }
+        documento: { type: string, description: Documento cadastral enviado como texto. }
+        email: { type: string, format: email }
+        telefone: { type: string }
+        setores:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items: { type: string, example: FINANCEIRO }
+          description: Use os códigos de SETORES definidos no backend.
+        fotoUrl: { $ref: "#/components/schemas/FotoUrl" }
+        responsavelNome: { type: string }
+        responsavelDocumento: { type: string }
+    DadosUsuario:
+      type: object
+      properties:
+        email: { type: string, format: email }
+        nomeCompleto: { type: string, minLength: 3 }
+        telefone: { type: string, nullable: true }
+        perfil: { $ref: "#/components/schemas/Perfil" }
+        status: { type: string, enum: [ativo, inativo, convidado] }
+        biometriaAtiva: { type: boolean }
+        fotoUrl: { $ref: "#/components/schemas/FotoUrl" }
+        setores:
+          type: array
+          items: { type: string, example: FINANCEIRO }
+          description: A validação converte os códigos para maiúsculas e verifica a lista SETORES.
+    FotoUrl:
+      type: string
+      nullable: true
+      description: URL válida, string vazia ou valor nulo.
+    UsuarioSessao:
+      type: object
+      properties:
+        id: { type: string }
+        nomeCompleto: { type: string }
+        email: { type: string, format: email }
+        telefone: { type: string, nullable: true }
+        perfil: { $ref: "#/components/schemas/Perfil" }
+        status: { type: string }
+        escritorioId: { type: string, nullable: true }
+        clienteId: { type: string, nullable: true }
+        setores:
+          type: array
+          items: { type: string }
+          description: Setores efetivos da sessão.
+        fotoUrl: { $ref: "#/components/schemas/FotoUrl" }
+        biometriaAtiva: { type: boolean }
+        precisaTrocarSenha: { type: boolean }
